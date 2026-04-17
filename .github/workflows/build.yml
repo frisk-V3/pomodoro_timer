@@ -1,0 +1,110 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/*.yml"
+      - "**.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            py: "3.11"
+            suffix: linux
+          - os: macos-latest
+            py: "3.11"
+            suffix: mac
+          - os: windows-latest
+            py: "3.11"
+            suffix: win
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.py }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller
+
+      # Linux のみ fpm をインストール
+      - name: Install fpm (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+
+      - name: Build executable
+        run: |
+          pyinstaller --onefile --name json_Gatchanko_Tool main.py
+
+      # Linux のみ .deb パッケージ生成
+      - name: Package .deb (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p pkg/usr/local/bin
+          cp dist/json_Gatchanko_Tool pkg/usr/local/bin/
+
+          fpm -s dir -t deb \
+            -n json-gatchanko-tool \
+            -v 1.0.0 \
+            --description "JSON Gatchanko Tool" \
+            -C pkg .
+
+      - name: Zip artifact
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "json_Gatchanko_Tool-${{ matrix.suffix }}.zip" ./dist/*
+          elif [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            zip -r "json_Gatchanko_Tool-${{ matrix.suffix }}.zip" ./*.deb
+          else
+            cd dist && zip -r "../json_Gatchanko_Tool-${{ matrix.suffix }}.zip" .
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.suffix }}
+          path: json_Gatchanko_Tool-${{ matrix.suffix }}.zip
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "latest-build"
+          name: "Latest Automated Build"
+          files: ./artifacts/**/*.zip
+          overwrite: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
